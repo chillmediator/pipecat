@@ -37,24 +37,28 @@ logger.add(sys.stderr, level="DEBUG")
 
 
 async def save_audio(server_name: str, audio: bytes, sample_rate: int, num_channels: int):
-    if len(audio) > 0:
-        filename = (
-            f"{server_name}_recording_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
-        )
-        with io.BytesIO() as buffer:
-            with wave.open(buffer, "wb") as wf:
-                wf.setsampwidth(2)
-                wf.setnchannels(num_channels)
-                wf.setframerate(sample_rate)
-                wf.writeframes(audio)
-            async with aiofiles.open(filename, "wb") as file:
-                await file.write(buffer.getvalue())
-        logger.info(f"Merged audio saved to {filename}")
-    else:
-        logger.info("No audio data to save")
+    try:
+        if len(audio) > 0:
+            filename = (
+                f"{server_name}_recording_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
+            )
+            with io.BytesIO() as buffer:
+                with wave.open(buffer, "wb") as wf:
+                    wf.setsampwidth(2)
+                    wf.setnchannels(num_channels)
+                    wf.setframerate(sample_rate)
+                    wf.writeframes(audio)
+                try:
+                    async with aiofiles.open(filename, "wb") as file:
+                        await file.write(buffer.getvalue())
+                except (IOError, PermissionError) as e:
+                    logger.warning(f"Could not save audio file: {e}")
+    except Exception as e:
+        logger.error(f"Error in save_audio: {e}")
 
 
 async def run_bot(websocket_client: WebSocket, stream_sid: str, testing: bool):
+    print("Initializing bot components", flush=True)
     transport = FastAPIWebsocketTransport(
         websocket=websocket_client,
         params=FastAPIWebsocketParams(
@@ -67,16 +71,29 @@ async def run_bot(websocket_client: WebSocket, stream_sid: str, testing: bool):
             serializer=TwilioFrameSerializer(stream_sid),
         ),
     )
+    print("Transport initialized", flush=True)
 
-    llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"), model="gpt-4o")
+    print("Initializing OpenAI LLM", flush=True)
+    openai_key = os.getenv("OPENAI_API_KEY")
+    print(f"OpenAI key present: {bool(openai_key)}", flush=True)
+    llm = OpenAILLMService(api_key=openai_key, model="gpt-4o")
+    print("LLM initialized", flush=True)
 
-    stt = DeepgramSTTService(api_key=os.getenv("DEEPGRAM_API_KEY"), audio_passthrough=True)
+    print("Initializing Deepgram", flush=True)
+    deepgram_key = os.getenv("DEEPGRAM_API_KEY")
+    print(f"Deepgram key present: {bool(deepgram_key)}", flush=True)
+    stt = DeepgramSTTService(api_key=deepgram_key, audio_passthrough=True)
+    print("Deepgram initialized", flush=True)
 
+    print("Initializing Cartesia", flush=True)
+    cartesia_key = os.getenv("CARTESIA_API_KEY")
+    print(f"Cartesia key present: {bool(cartesia_key)}", flush=True)
     tts = CartesiaTTSService(
-        api_key=os.getenv("CARTESIA_API_KEY"),
+        api_key=cartesia_key,
         voice_id="79a125e8-cd45-4c13-8a67-188112f4dd22",  # British Lady
         push_silence_after_stop=testing,
     )
+    print("Cartesia initialized", flush=True)
 
     messages = [
         {

@@ -15,6 +15,9 @@ from starlette.responses import HTMLResponse
 
 app = FastAPI()
 
+# Initialize app state
+app.state.testing = False
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allow all origins for testing
@@ -32,14 +35,23 @@ async def start_call():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    print("WebSocket connection attempt", flush=True)
     await websocket.accept()
+    print("WebSocket accepted", flush=True)
     start_data = websocket.iter_text()
+    print("Getting first message", flush=True)
     await start_data.__anext__()
+    print("Getting second message", flush=True)
     call_data = json.loads(await start_data.__anext__())
-    print(call_data, flush=True)
+    print(f"Call data received: {call_data}", flush=True)
     stream_sid = call_data["start"]["streamSid"]
-    print("WebSocket connection accepted")
-    await run_bot(websocket, stream_sid, app.state.testing)
+    print(f"Stream SID: {stream_sid}", flush=True)
+    print("Starting bot", flush=True)
+    try:
+        await run_bot(websocket, stream_sid, app.state.testing)
+    except Exception as e:
+        print(f"Error in run_bot: {e}", flush=True)
+        raise
 
 
 if __name__ == "__main__":
