@@ -6,7 +6,6 @@
 
 import datetime
 import io
-import json
 import os
 import sys
 import wave
@@ -30,45 +29,23 @@ from pipecat.transports.network.fastapi_websocket import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
 )
-from storage import init_supabase, store_conversation
+from storage import StorageManager
 
 load_dotenv(override=True)
 
 logger.remove(0)
 logger.add(sys.stderr, level="DEBUG")
 
+# Initialize storage manager
+storage = StorageManager(protocol="gdrive", root_path="twilio_recordings")
 
 async def save_audio(server_name: str, audio: bytes, sample_rate: int, num_channels: int):
-    try:
-        if len(audio) > 0:
-            filename = (
-                f"{server_name}_recording_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
-            )
-            with io.BytesIO() as buffer:
-                with wave.open(buffer, "wb") as wf:
-                    wf.setsampwidth(2)
-                    wf.setnchannels(num_channels)
-                    wf.setframerate(sample_rate)
-                    wf.writeframes(audio)
-                try:
-                    async with aiofiles.open(filename, "wb") as file:
-                        await file.write(buffer.getvalue())
-                except (IOError, PermissionError) as e:
-                    logger.warning(f"Could not save audio file: {e}")
-    except Exception as e:
-        logger.error(f"Error in save_audio: {e}")
+    """Save audio data using the storage manager."""
+    await storage.save_audio(server_name, audio, sample_rate, num_channels)
 
 
 async def run_bot(websocket_client: WebSocket, stream_sid: str, testing: bool):
     print("Initializing bot components", flush=True)
-    
-    # Initialize storage
-    init_supabase()
-    
-    # Initialize conversation state
-    conversation_messages = []
-    audio_chunks = []
-    
     transport = FastAPIWebsocketTransport(
         websocket=websocket_client,
         params=FastAPIWebsocketParams(
@@ -170,7 +147,6 @@ async def run_bot(websocket_client: WebSocket, stream_sid: str, testing: bool):
     @audiobuffer.event_handler("on_audio_data")
     async def on_audio_data(buffer, audio, sample_rate, num_channels):
         server_name = f"server_{websocket_client.client.port}"
-        audio_chunks.append(audio)
         await save_audio(server_name, audio, sample_rate, num_channels)
 
     # We use `handle_sigint=False` because `uvicorn` is controlling keyboard
@@ -178,40 +154,5 @@ async def run_bot(websocket_client: WebSocket, stream_sid: str, testing: bool):
     # the runner finishes running a task which could be useful for long running
     # applications with multiple clients connecting.
     runner = PipelineRunner(handle_sigint=False, force_gc=True)
-
-    try:
-        while True:
-            message = await websocket_client.receive_text()
-            data = json.loads(message)
-
-            if data["event"] == "start":
-                print("Starting conversation", flush=True)
-                conversation_messages = []
-                audio_chunks = []
-            elif data["event"] == "stop":
-                print("Stopping conversation", flush=True)
-                
-                # Combine all audio chunks
-                combined_audio = b"".join(audio_chunks)
-                
-                # Store conversation data
-                await store_conversation(
-                    call_sid=stream_sid,
-                    audio_data=combined_audio,
-                    sample_rate=8000,
-                    num_channels=1,
-                    conversation_text=conversation_messages,
-                    metadata={"testing": testing}
-                )
-                
-                break
-            # Add message to conversation history
-            conversation_messages.append({
-                "role": "user" if data["event"] == "media" else "assistant",
-                "content": data["text"] if data["event"] == "media" else data["response_text"]
-            })
-
-    except Exception as e:
-        logger.error(f"Error in run_bot: {e}")
 
     await runner.run(task)

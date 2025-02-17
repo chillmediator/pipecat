@@ -2,6 +2,6 @@ git+https://github.com/chillmediator/pipecat.git@main#egg=pipecat[cartesia,opena
 fastapi
 uvicorn
 python-dotenv
-supabase-py
-python-multipart
 loguru
+fsspec[gdrive]>=2023.12.0
+aiofiles>=23.2.1
