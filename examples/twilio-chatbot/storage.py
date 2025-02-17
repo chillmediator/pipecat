@@ -1,52 +1,55 @@
 """
-Storage module for managing audio recordings using fsspec.
+Storage module for managing audio recordings using fsspec and gcsfs.
 """
 import os
 import io
 import wave
 import datetime
 import logging
+import json
 from typing import Optional
 import fsspec
+from gcsfs import GCSFileSystem
 import aiofiles
-from fsspec.asyn import AsyncFileSystem
 
 logger = logging.getLogger(__name__)
 
 class StorageManager:
-    """Manages storage of audio recordings using fsspec."""
+    """Manages storage of audio recordings using fsspec and gcsfs."""
     
-    def __init__(self, protocol: str = "gdrive", root_path: str = "recordings"):
+    def __init__(self, protocol: str = "gcs", root_path: str = "recordings"):
         """Initialize storage manager.
         
         Args:
-            protocol: Storage protocol to use ('gdrive', 'file', 's3', etc.)
+            protocol: Storage protocol to use ('gcs' for Google Cloud Storage/Drive)
             root_path: Root path in the storage where files will be saved
         """
         self.protocol = protocol
         self.root_path = root_path
-        self._fs: Optional[AsyncFileSystem] = None
+        self._fs: Optional[GCSFileSystem] = None
         
         # Ensure we have required credentials
-        if protocol == "gdrive":
-            if not os.getenv("GOOGLE_TOKEN"):
-                raise ValueError("GOOGLE_TOKEN environment variable required for Google Drive storage")
+        if protocol == "gcs":
+            token = os.getenv("GOOGLE_TOKEN")
+            if not token:
+                raise ValueError("GOOGLE_TOKEN environment variable required for Google storage")
+            try:
+                # Validate token is proper JSON
+                self.token_dict = json.loads(token)
+            except json.JSONDecodeError:
+                raise ValueError("GOOGLE_TOKEN must be a valid JSON string")
         
-    async def _get_filesystem(self) -> AsyncFileSystem:
+    async def _get_filesystem(self) -> GCSFileSystem:
         """Get or create filesystem instance."""
         if self._fs is None:
-            if self.protocol == "gdrive":
-                self._fs = fsspec.filesystem(
-                    "gdrive",
-                    token=os.getenv("GOOGLE_TOKEN"),
-                    asynchronous=True
-                )
+            if self.protocol == "gcs":
+                self._fs = GCSFileSystem(token=self.token_dict)
             else:
-                self._fs = fsspec.filesystem(self.protocol, asynchronous=True)
+                self._fs = fsspec.filesystem(self.protocol)
             
             # Ensure root path exists
-            if not await self._fs.exists(self.root_path):
-                await self._fs.makedirs(self.root_path)
+            if not self._fs.exists(self.root_path):
+                self._fs.makedirs(self.root_path)
         
         return self._fs
     
@@ -81,8 +84,8 @@ class StorageManager:
                 
                 # Save to cloud storage
                 fs = await self._get_filesystem()
-                async with await fs.open(full_path, "wb") as f:
-                    await f.write(buffer.getvalue())
+                with fs.open(full_path, "wb") as f:
+                    f.write(buffer.getvalue())
                 
                 logger.info(f"Audio saved to {full_path}")
                 return full_path
@@ -102,7 +105,7 @@ class StorageManager:
         """
         try:
             fs = await self._get_filesystem()
-            files = await fs.ls(self.root_path)
+            files = fs.ls(self.root_path)
             
             if name:
                 files = [f for f in files if name in f]
