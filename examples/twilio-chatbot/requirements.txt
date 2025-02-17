@@ -1,5 +1,7 @@
-pipecat-ai[cartesia,openai,silero,deepgram]
+git+https://github.com/chillmediator/pipecat.git@main#egg=pipecat[cartesia,openai,silero,deepgram]
 fastapi
 uvicorn
 python-dotenv
+supabase-py
+python-multipart
 loguru

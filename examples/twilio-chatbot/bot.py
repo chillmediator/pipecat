@@ -6,6 +6,7 @@
 
 import datetime
 import io
+import json
 import os
 import sys
 import wave
@@ -29,6 +30,7 @@ from pipecat.transports.network.fastapi_websocket import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
 )
+from storage import init_supabase, store_conversation
 
 load_dotenv(override=True)
 
@@ -59,6 +61,14 @@ async def save_audio(server_name: str, audio: bytes, sample_rate: int, num_chann
 
 async def run_bot(websocket_client: WebSocket, stream_sid: str, testing: bool):
     print("Initializing bot components", flush=True)
+    
+    # Initialize storage
+    init_supabase()
+    
+    # Initialize conversation state
+    conversation_messages = []
+    audio_chunks = []
+    
     transport = FastAPIWebsocketTransport(
         websocket=websocket_client,
         params=FastAPIWebsocketParams(
@@ -76,7 +86,7 @@ async def run_bot(websocket_client: WebSocket, stream_sid: str, testing: bool):
     print("Initializing OpenAI LLM", flush=True)
     openai_key = os.getenv("OPENAI_API_KEY")
     print(f"OpenAI key present: {bool(openai_key)}", flush=True)
-    llm = OpenAILLMService(api_key=openai_key, model="gpt-4o")
+    llm = OpenAILLMService(api_key=openai_key, model="gpt-4o-mini")
     print("LLM initialized", flush=True)
 
     print("Initializing Deepgram", flush=True)
@@ -90,15 +100,31 @@ async def run_bot(websocket_client: WebSocket, stream_sid: str, testing: bool):
     print(f"Cartesia key present: {bool(cartesia_key)}", flush=True)
     tts = CartesiaTTSService(
         api_key=cartesia_key,
-        voice_id="79a125e8-cd45-4c13-8a67-188112f4dd22",  # British Lady
+        voice_id="b7187e84-fe22-4344-ba4a-bc013fcb533e",  # German voice
+        model_id="sonic",
         push_silence_after_stop=testing,
     )
+    
+    # Set the model and language properly
+    await tts.set_model("sonic")
+    service_lang = tts.language_to_service_language("de")
+    await tts.update_setting("language", service_lang)
+    await tts.update_setting("output_format", {
+        "container": "raw",
+        "encoding": "pcm_s16le",
+        "sample_rate": 24000
+    })
+    
+    # Debug prints to verify settings after all settings are applied
     print("Cartesia initialized", flush=True)
-
+    print(f"\nTTS Service Configuration:", flush=True)
+    print(f"Voice ID: {tts._voice_id}", flush=True)
+    print(f"Model: {tts._model_name}", flush=True)
+    print(f"Settings: {tts._settings}", flush=True)
     messages = [
         {
             "role": "system",
-            "content": "You are an elementary teacher in an audio call. Your output will be converted to audio so don't include special characters in your answers. Respond to what the student said in a short short sentence.",
+            "content": "Du bist ein sehr ausführlich antwortender Bot. Du machst gerne Witze.",
         },
     ]
 
@@ -134,7 +160,7 @@ async def run_bot(websocket_client: WebSocket, stream_sid: str, testing: bool):
         # Start recording.
         await audiobuffer.start_recording()
         # Kick off the conversation.
-        messages.append({"role": "system", "content": "Please introduce yourself to the user."})
+        messages.append({"role": "system", "content": "Stelle dich sehr ausführlich vor."})
         await task.queue_frames([context_aggregator.user().get_context_frame()])
 
     @transport.event_handler("on_client_disconnected")
@@ -144,6 +170,7 @@ async def run_bot(websocket_client: WebSocket, stream_sid: str, testing: bool):
     @audiobuffer.event_handler("on_audio_data")
     async def on_audio_data(buffer, audio, sample_rate, num_channels):
         server_name = f"server_{websocket_client.client.port}"
+        audio_chunks.append(audio)
         await save_audio(server_name, audio, sample_rate, num_channels)
 
     # We use `handle_sigint=False` because `uvicorn` is controlling keyboard
@@ -151,5 +178,40 @@ async def run_bot(websocket_client: WebSocket, stream_sid: str, testing: bool):
     # the runner finishes running a task which could be useful for long running
     # applications with multiple clients connecting.
     runner = PipelineRunner(handle_sigint=False, force_gc=True)
+
+    try:
+        while True:
+            message = await websocket_client.receive_text()
+            data = json.loads(message)
+
+            if data["event"] == "start":
+                print("Starting conversation", flush=True)
+                conversation_messages = []
+                audio_chunks = []
+            elif data["event"] == "stop":
+                print("Stopping conversation", flush=True)
+                
+                # Combine all audio chunks
+                combined_audio = b"".join(audio_chunks)
+                
+                # Store conversation data
+                await store_conversation(
+                    call_sid=stream_sid,
+                    audio_data=combined_audio,
+                    sample_rate=8000,
+                    num_channels=1,
+                    conversation_text=conversation_messages,
+                    metadata={"testing": testing}
+                )
+                
+                break
+            # Add message to conversation history
+            conversation_messages.append({
+                "role": "user" if data["event"] == "media" else "assistant",
+                "content": data["text"] if data["event"] == "media" else data["response_text"]
+            })
+
+    except Exception as e:
+        logger.error(f"Error in run_bot: {e}")
 
     await runner.run(task)
