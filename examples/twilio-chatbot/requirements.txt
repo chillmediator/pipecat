@@ -1,4 +1,4 @@
-git+https://github.com/chillmediator/pipecat.git@main#egg=pipecat
+git+https://github.com/chillmediator/pipecat.git@main#egg=pipecat-ai
 fastapi
 uvicorn
 python-dotenv
